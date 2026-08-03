@@ -6,6 +6,7 @@ orion
 
 # Output files
 down.txt
+down_report.xlsx
 
 # Sensitive Configuration (CRITICAL)
 config.py

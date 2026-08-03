@@ -2,7 +2,7 @@ import re
 from bs4 import BeautifulSoup
 
 def parse_report_html(html_content, entity_type="Node"):
-    """Parses down nodes or interfaces, drops headers, and extracts actual down times."""
+    """Parses down nodes or interfaces, drops headers, and extracts entries."""
     soup = BeautifulSoup(html_content, "html.parser")
     down_items = []
     
@@ -35,10 +35,8 @@ def parse_report_html(html_content, entity_type="Node"):
             current_node = link_tag.get_text(strip=True) if link_tag else row.get_text(strip=True)
             continue  
         
-        # 4. Extract the actual down entity and its actual down time
+        # 4. Extract the actual down entity
         if is_hard_down:
-        
-
             for col in cols:
                 link_tag = col.find("a")
                 if link_tag:
