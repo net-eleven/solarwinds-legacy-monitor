@@ -1,0 +1,18 @@
+# Python runtime files
+__pycache__/
+*.py[cod]
+*$py.class
+orion
+
+# Output files
+down.txt
+
+# Sensitive Configuration (CRITICAL)
+config.py
+.env
+
+# Virtual Environments
+venv/
+env/
+
+
