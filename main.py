@@ -25,14 +25,14 @@ def process_items_sequential(fetcher, client, items_list, delay=0.15):
         item['downtime'] = downtime
         
         if item['type'] == 'Interface':
-            item['full_name'] = f"{item['parent']} -> {item['name']}"
+            item['full_name'] = f"{item['parent']}-{item['name']}"
         else:
             item['full_name'] = item['name']
             
         item['display_str'] = f"[{downtime}] {item['full_name']}"
         processed.append(item)
         
-        print(f"  [{idx}/{total}] Fetched {item['type']}: {item['full_name']} ({downtime})")
+        print(f"  [{idx}/{total}]  {downtime} - {item['full_name']}")
         time.sleep(delay)
         
     return processed
