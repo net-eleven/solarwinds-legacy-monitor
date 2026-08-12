@@ -7,10 +7,10 @@ from fetch import Fetch
 import parse
 
 # Configuration
-POLL_INTERVAL_SECONDS = 180    # Poll SolarWinds every 2 minutes
+POLL_INTERVAL_SECONDS = 120    # Poll SolarWinds every 2 minutes
 FLAP_HOLD_MINUTES = 10         # Hold time before initial alert
 REMINDER_INTERVAL_MINUTES = 30 # Re-alert interval for ongoing down links
-SHIFT_START_TIME = input("Start shift time: ")  # Shift start cutoff time
+SHIFT_START_TIME = "11:30 AM"  # Shift start cutoff time
 
 def parse_timestamp(d_str):
     """Parses SolarWinds downtime string into a datetime object."""
@@ -79,7 +79,7 @@ def main():
     print(f"[*] Polling Interval : Every {POLL_INTERVAL_SECONDS // 60} minutes")
     print(f"[*] Flap Hold Timer  : {FLAP_HOLD_MINUTES} minutes before alerting")
     print(f"[*] Reminder Timer   : Every {REMINDER_INTERVAL_MINUTES} minutes")
-    print(f"[*] Shift Start      : {shift_start_dt.strftime('%d-%b-%Y %I:%M %p')}")
+    print(f"[*] Shift Start Cutoff: {shift_start_dt.strftime('%d-%b-%Y %I:%M %p')}")
     print("==================================================\n")
 
     client = OrionClient()
@@ -107,6 +107,13 @@ def main():
             raw_all = raw_nodes + raw_interfaces
             current_active_keys = set()
 
+            # Batch lists for grouping output
+            new_outages = []
+            initial_alerts = []
+            periodic_reminders = []
+            recovered_items = []
+            flap_items = []
+
             # 2. Process fetched items
             for item in raw_all:
                 downtime_str = fetcher.fetch_downtime(client, item)
@@ -118,7 +125,7 @@ def main():
 
                 # Build unique key and label
                 if item['type'] == 'Interface':
-                    label = f"{item['parent']}-{item['name']}"
+                    label = f"{item['parent']} -> {item['name']}"
                     key = f"INT:{label}"
                 else:
                     label = item['name']
@@ -136,47 +143,79 @@ def main():
                         "solarwinds_time": downtime_str
                     }
                     if not is_first_run:
-                        print(f"  [+] NEW SHIFT OUTAGE DETECTED (Holding {FLAP_HOLD_MINUTES}m): {label}")
+                        new_outages.append(label)
 
-            # 3. Check hold timers & trigger initial alerts or 30-min reminders
+            # 3. Process hold timers & reminders
             for key, data in list(tracked_state.items()):
                 if key in current_active_keys:
                     total_minutes_down = (now - data["first_seen"]).total_seconds() / 60.0
 
-                    # CASE A: Initial Alert (Down >= 10m and never alerted)
+                    # CASE A: Initial Alert
                     if total_minutes_down >= FLAP_HOLD_MINUTES and not data["initial_alerted"]:
                         data["initial_alerted"] = True
                         data["last_alerted"] = now
-                        
-                        alert_msg = f"DOWN for {int(total_minutes_down)}m: {data['display_name']}"
-                        print(f"\n🚨 [INITIAL ALERT] {alert_msg}\n")
-                        sound_alarm()
-                        send_windows_toast("🚨 NOC Outage Alert", alert_msg, icon_style="Critical")
+                        initial_alerts.append((int(total_minutes_down), data["display_name"]))
 
-                    # CASE B: Periodic Reminder (Alerted, but 30m passed since last notification)
+                    # CASE B: Periodic Reminder
                     elif data["initial_alerted"] and data["last_alerted"]:
                         mins_since_last_alert = (now - data["last_alerted"]).total_seconds() / 60.0
-                        
                         if mins_since_last_alert >= REMINDER_INTERVAL_MINUTES:
                             data["last_alerted"] = now
-                            
-                            reminder_msg = f"STILL DOWN ({int(total_minutes_down)}m total): {data['display_name']}"
-                            print(f"\n⏰ [PERIODIC REMINDER] {reminder_msg}\n")
-                            sound_alarm()
-                            send_windows_toast("⏰ Outage Still Active", reminder_msg, icon_style="Normal")
+                            periodic_reminders.append((int(total_minutes_down), data["display_name"]))
 
-            # 4. Check for recovered items
+            # 4. Process recovered items and flaps
             tracked_keys = list(tracked_state.keys())
             for key in tracked_keys:
                 if key not in current_active_keys:
-                    recovered_item = tracked_state.pop(key)
-                    # Safe check using .get() to avoid KeyError
-                    if recovered_item.get("initial_alerted", False):
-                        rec_msg = f"RECOVERED: {recovered_item['display_name']}"
-                        print(f"\n✅ [RECOVERY] {rec_msg}\n")
-                        send_windows_toast("✅ Link Recovered", rec_msg, icon_style="Normal")
+                    item = tracked_state.pop(key)
+                    if item.get("initial_alerted", False):
+                        recovered_items.append(item["display_name"])
                     else:
-                        print(f"  [-] Flap Resolved (under {FLAP_HOLD_MINUTES}m): {recovered_item['display_name']}")
+                        total_down = (now - item["first_seen"]).total_seconds() / 60.0
+                        flap_items.append((int(total_down), item["display_name"]))
+
+            # ---------------- DISPLAY BATCHED OUTPUTS ----------------
+
+            # 1. NEW SHIFT OUTAGES (Detected, currently holding for 10m)
+            if new_outages:
+                print(f"\n🔍 NEW SHIFT OUTAGES ({len(new_outages)} Detected - Holding {FLAP_HOLD_MINUTES}m):")
+                for name in new_outages:
+                    print(f"  • {name}")
+
+            # 2. INITIAL ALERTS (Down >= 10m)
+            if initial_alerts:
+                print(f"\n🚨 INITIAL ALERTS ({len(initial_alerts)} Outages >= {FLAP_HOLD_MINUTES}m):")
+                for mins, name in initial_alerts:
+                    print(f"  • [{mins}m] {name}")
+                sound_alarm()
+                
+                toast_body = f"[{initial_alerts[0][0]}m] {initial_alerts[0][1]}" if len(initial_alerts) == 1 else f"{len(initial_alerts)} new links down > {FLAP_HOLD_MINUTES}m"
+                send_windows_toast("🚨 NOC Outage Alert", toast_body, icon_style="Critical")
+
+            # 3. PERIODIC REMINDERS (Still down after 30m)
+            if periodic_reminders:
+                print(f"\n⏰ PERIODIC REMINDERS ({len(periodic_reminders)} Still Active):")
+                for mins, name in periodic_reminders:
+                    print(f"  • [{mins}m] {name}")
+                sound_alarm()
+                
+                toast_body = f"[{periodic_reminders[0][0]}m total] {periodic_reminders[0][1]}" if len(periodic_reminders) == 1 else f"{len(periodic_reminders)} outages still active"
+                send_windows_toast("⏰ Outage Still Active", toast_body, icon_style="Normal")
+
+            # 4. RESOLVED OUTAGES (Recovered after initial alert fired)
+            if recovered_items:
+                print(f"\n✅ RESOLVED OUTAGES ({len(recovered_items)} Restored):")
+                for name in recovered_items:
+                    print(f"  • {name}")
+                
+                toast_body = recovered_items[0] if len(recovered_items) == 1 else f"{len(recovered_items)} links recovered"
+                send_windows_toast("✅ Link Recovered", toast_body, icon_style="Normal")
+
+            # 5. FLAPS RESOLVED (Recovered under 10m before alert fired)
+            if flap_items:
+                print(f"\n⚡ FLAPS RESOLVED ({len(flap_items)} Recovered < {FLAP_HOLD_MINUTES}m):")
+                for mins, name in flap_items:
+                    print(f"  • [{mins}m] {name}")
 
             if is_first_run:
                 is_first_run = False
